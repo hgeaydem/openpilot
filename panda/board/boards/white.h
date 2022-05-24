@@ -333,7 +333,7 @@ const harness_configuration white_harness_config = {
 };
 
 const board board_white = {
-  .board_type = "Black",
+  .board_type = "White",
   .harness_config = &white_harness_config,
   .init = white_init,
   .enable_can_transceiver = white_enable_can_transceiver,

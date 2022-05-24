@@ -34,7 +34,7 @@ void grey_set_gps_mode(uint8_t mode) {
 }
 
 const board board_grey = {
-  .board_type = "Black",
+  .board_type = "Grey",
   .harness_config = &white_harness_config,
   .init = grey_init,
   .enable_can_transceiver = white_enable_can_transceiver,
