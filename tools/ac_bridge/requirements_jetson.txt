@@ -1,0 +1,10 @@
+# Python deps for Jetson L4T container
+numpy
+pynput
+watchdog
+pycapnp
+cython
+pyzmq
+pyyaml
+cffi
+scons

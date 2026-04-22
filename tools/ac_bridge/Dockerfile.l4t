@@ -1,0 +1,73 @@
+# L4T container for running openpilot AC bridge on NVIDIA Jetson.
+#
+# Uses DeepStream base image for hardware-accelerated video processing:
+#   - nvjpegdec / nvv4l2decoder for camera decode
+#   - nvvideoconvert for GPU-accelerated resize and color conversion
+#   - GStreamer pipeline with NVIDIA plugins
+#
+# Build:
+#   docker build -f Dockerfile.l4t -t ac-bridge-l4t ../..
+#
+# Run:
+#   ./run_jetson.sh --ac-host 192.168.1.100
+#
+# Tested on: Jetson Orin (JetPack 6.x / L4T R36.x)
+# For JetPack 5.x, change the base image tag to 6.3-samples or 6.4-samples
+
+ARG DEEPSTREAM_TAG=7.1-samples-multiarch
+FROM nvcr.io/nvidia/deepstream-l4t:${DEEPSTREAM_TAG}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# System dependencies for openpilot + GStreamer Python bindings
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip \
+    python3-dev \
+    python3-gi \
+    python3-gst-1.0 \
+    gir1.2-gst-plugins-base-1.0 \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    v4l-utils \
+    libzmq3-dev \
+    libcapnp-dev \
+    capnproto \
+    libffi-dev \
+    libssl-dev \
+    libyaml-dev \
+    git \
+    build-essential \
+    clang \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python dependencies
+COPY tools/ac_bridge/requirements_jetson.txt /tmp/requirements_jetson.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements_jetson.txt
+
+# Copy openpilot source
+COPY . /openpilot
+WORKDIR /openpilot
+
+# Build cereal messaging
+RUN cd cereal && \
+    pip3 install --no-cache-dir cython pycapnp && \
+    python3 setup.py build_ext --inplace || true
+
+# Build opendbc CAN packer
+RUN cd opendbc && \
+    scons -j$(nproc) || true
+
+# Build boardd API
+RUN cd selfdrive/boardd && \
+    scons -j$(nproc) || true
+
+ENV PYTHONPATH=/openpilot
+ENV SIMULATION=1
+ENV NOSENSOR=1
+
+WORKDIR /openpilot/tools/ac_bridge
+
+ENTRYPOINT ["python3", "bridge.py"]
+CMD ["--cam-backend", "gstreamer", "--cam-source", "auto"]

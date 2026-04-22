@@ -1,0 +1,9 @@
+# Bridge machine (openpilot + camera)
+opencv-python>=4.5
+numpy
+pynput
+watchdog
+
+# Companion machine (game + Fanatec wheel)
+# Also needs: evdev (Linux only, for FFB and virtual pedals)
+evdev>=1.6
