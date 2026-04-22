@@ -1,8 +1,9 @@
-# Bridge machine (openpilot + camera)
+# Bridge machine (openpilot + camera or screen capture)
 opencv-python>=4.5
 numpy
 pynput
 watchdog
+mss>=9.0
 
 # Companion machine (game + virtual Xbox controller)
 # Also needs: evdev (Linux only, for uinput Xbox controller)

@@ -6,6 +6,7 @@ Runs on the Linux machine with a camera pointed at the game screen.
 Supports two camera backends:
   - OpenCV (--cam-backend opencv): portable, works everywhere
   - GStreamer/NVIDIA (--cam-backend gstreamer): hardware-accelerated on Jetson
+  - Screen capture (--cam-backend screen): captures game window directly (local testing)
 
 Data flow:
   Camera -> openpilot (modeld -> plannerd -> controlsd)
@@ -288,6 +289,13 @@ def bridge_main(q, args):
                   args.cam_width, args.cam_height, args.cam_fps),
             daemon=True,
         )
+    elif args.cam_backend == 'screen':
+        from screen_capture import start_camera_screen
+        cam_thread = threading.Thread(
+            target=start_camera_screen,
+            args=(cam_callback, args.window_title, args.screen_region, args.cam_fps),
+            daemon=True,
+        )
     else:
         cam_thread = threading.Thread(
             target=start_camera_opencv,
@@ -421,8 +429,8 @@ def main():
                         help='UDP port to receive GTA5 telemetry (default: 5557)')
     # Camera backend selection
     parser.add_argument('--cam-backend', default='opencv',
-                        choices=['opencv', 'gstreamer'],
-                        help='Camera backend: opencv (portable) or gstreamer (Jetson HW accel)')
+                        choices=['opencv', 'gstreamer', 'screen'],
+                        help='Camera backend: opencv (portable), gstreamer (Jetson HW accel), or screen (local testing)')
     parser.add_argument('--camera', type=int, default=0,
                         help='OpenCV camera index (default: 0)')
     # GStreamer-specific options
@@ -438,6 +446,11 @@ def main():
                         help='Camera capture height (default: 1080)')
     parser.add_argument('--cam-fps', type=int, default=20,
                         help='Camera target FPS (default: 20)')
+    # Screen capture options
+    parser.add_argument('--window-title', default=None,
+                        help='Game window title for screen capture (default: auto)')
+    parser.add_argument('--screen-region', default=None,
+                        help='Screen region as x,y,w,h for screen capture')
     args = parser.parse_args()
 
     # Set up openpilot params
