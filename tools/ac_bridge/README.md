@@ -1,8 +1,12 @@
 # Assetto Corsa &lt;-&gt; openpilot Bridge
 
-A two-machine bridge that connects [openpilot](https://github.com/commaai/openpilot) to [Assetto Corsa](https://www.assettocorsa.it/), enabling openpilot's self-driving stack to control a car in-game through a real Fanatec Clubsport DD+ wheelbase.
+A bridge that connects [openpilot](https://github.com/commaai/openpilot) to [Assetto Corsa](https://www.assettocorsa.it/), enabling openpilot's self-driving stack to control a car in-game through a real Fanatec Clubsport DD+ wheelbase.
 
-A camera on the openpilot machine captures the game screen. openpilot processes the video feed through its full perception and control pipeline (modeld, plannerd, controlsd), producing steering, throttle, and brake commands. These commands are sent over the network to a companion running on the game machine, which uses force feedback to physically turn the Fanatec wheel (the game reads the wheel position as steering input) and emits throttle/brake on a virtual pedal device.
+Supports two modes:
+- **Two-machine**: A camera on the openpilot machine captures the game screen from a separate game machine. The companion runs on the game machine.
+- **Local (single-machine)**: Screen capture grabs frames directly from the game window — no camera or second machine needed. Uses GPU-accelerated NVIDIA NvFBC capture when available, with GStreamer and CPU fallbacks.
+
+openpilot processes the video feed through its full perception and control pipeline (modeld, plannerd, controlsd), producing steering, throttle, and brake commands. These commands are sent to a companion process, which uses force feedback to physically turn the Fanatec wheel (the game reads the wheel position as steering input) and emits throttle/brake on a virtual pedal device.
 
 Assetto Corsa's built-in UDP telemetry feeds real-time vehicle state (speed, g-forces, RPM) back to openpilot for closed-loop control.
 
@@ -23,6 +27,7 @@ Assetto Corsa's built-in UDP telemetry feeds real-time vehicle state (speed, g-f
 - [Setup: Bridge Machine (openpilot)](#setup-bridge-machine-openpilot)
   - [Option A: Native Linux (OpenCV)](#option-a-native-linux-opencv)
   - [Option B: NVIDIA Jetson (GStreamer + DeepStream)](#option-b-nvidia-jetson-gstreamer--deepstream)
+  - [Option C: Local (Screen Capture)](#option-c-local-screen-capture)
 - [Usage](#usage)
   - [Quick Start](#quick-start)
   - [Keyboard Controls](#keyboard-controls)
@@ -32,6 +37,7 @@ Assetto Corsa's built-in UDP telemetry feeds real-time vehicle state (speed, g-f
   - [OpenCV Backend](#opencv-backend)
   - [GStreamer/NVIDIA Backend (Jetson)](#gstreamernvidia-backend-jetson)
   - [GStreamer Source Types](#gstreamer-source-types)
+  - [Screen Capture Backend](#screen-capture-backend)
   - [Testing the Camera](#testing-the-camera)
 - [Jetson Deployment](#jetson-deployment)
   - [Container Build](#container-build)
@@ -133,6 +139,8 @@ tools/ac_bridge/
 ├── lib/
 │   ├── __init__.py
 │   └── can.py             # Fake Honda CAN messages for openpilot
+├── screen_capture.py      # Screen capture backends (NvFBC/GStreamer/mss)
+├── local_bridge.py        # Single-machine launcher (screen capture mode)
 ├── tweak.cfg              # Steering ratio tuning (hot-reloadable)
 ├── Dockerfile.l4t         # L4T container for Jetson
 ├── run_jetson.sh          # One-command Jetson container launch
@@ -148,6 +156,8 @@ tools/ac_bridge/
 | `fanatec_ffb.py` | Game | Finds Fanatec wheel via evdev, implements PD position servo using FF_CONSTANT effects at 200Hz. Creates virtual pedal device via uinput. |
 | `camera_gst.py` | Bridge (Jetson) | GStreamer camera capture with NVIDIA hardware acceleration. Supports v4l2 (MJPEG/raw/H.264), CSI, RTSP, and test sources. All decode, resize, and color conversion on GPU. |
 | `lib/can.py` | Bridge | Generates fake Honda Civic CAN messages for openpilot's car interface. Simulates engine data, wheel speeds, steering sensors, cruise buttons, and radar. |
+| `screen_capture.py` | Bridge | Screen capture with three-tier backend hierarchy: NVIDIA NvFBC (GPU-accelerated), GStreamer ximagesrc (GPU resize), mss+OpenCV (CPU fallback). For local single-machine mode. |
+| `local_bridge.py` | Bridge | Convenience launcher for single-machine mode. Starts companion as subprocess and bridge with screen capture backend. |
 | `tweak.cfg` | Bridge | Steering ratio parameters. Watched by the bridge for live changes (no restart needed). |
 | `Dockerfile.l4t` | Build | L4T container image based on `deepstream-l4t:7.1-samples-multiarch`. Installs openpilot deps and builds cereal/opendbc. |
 | `run_jetson.sh` | Bridge (Jetson) | Builds the container if needed, passes through camera devices and NVIDIA runtime, mounts tweak.cfg for live tuning. |
@@ -270,6 +280,56 @@ docker run -it --rm --runtime nvidia --network host --ipc host \
     --ac-host <GAME_MACHINE_IP>
 ```
 
+### Option C: Local (Screen Capture)
+
+For running everything on one machine — no camera or second machine needed. The bridge captures frames directly from the game window using screen capture.
+
+```bash
+# Install dependencies (adds mss for screen capture)
+pip install opencv-python numpy pynput watchdog mss evdev
+
+# One-command launch (starts companion + bridge with screen capture):
+python local_bridge.py --ac-host 127.0.0.1
+
+# Capture a specific window by title
+python local_bridge.py --ac-host 127.0.0.1 --window-title "Assetto Corsa"
+
+# Capture a specific screen region (x,y,w,h)
+python local_bridge.py --ac-host 127.0.0.1 --screen-region 0,0,1920,1080
+
+# Disable FFB for initial testing
+python local_bridge.py --ac-host 127.0.0.1 --no-ffb
+```
+
+The screen capture backend auto-detects the best available method:
+1. **NVIDIA NvFBC** (fastest) — GPU-accelerated framebuffer capture via `libnvidia-fbc.so.1`
+2. **GStreamer ximagesrc** — X11 capture with GPU-accelerated resize via `nvvideoconvert`
+3. **mss + OpenCV** (most portable) — CPU-based screen capture, works everywhere
+
+See [Screen Capture Backend](#screen-capture-backend) for details on each tier.
+
+#### Local Bridge CLI Reference
+
+```
+python local_bridge.py [OPTIONS]
+
+Network:
+  --ac-host HOST            AC telemetry host (default: 127.0.0.1)
+  --ac-port PORT            AC telemetry UDP port (default: 9996)
+  --companion-port PORT     Internal UDP port for bridge<->companion (default: 5555)
+
+Screen capture:
+  --cam-fps FPS             Screen capture FPS (default: 20)
+  --window-title TITLE      Game window title for targeted capture
+  --screen-region x,y,w,h   Capture a specific screen region
+
+Companion (FFB):
+  --no-ffb                  Disable FFB wheel control (pedals only)
+  --ffb-strength FLOAT      FFB strength multiplier 0.0-1.0 (default: 1.0)
+  --p-gain FLOAT            FFB position tracking P gain (default: 5.0)
+  --d-gain FLOAT            FFB position tracking D gain (default: 0.3)
+```
+
 ---
 
 ## Usage
@@ -322,9 +382,10 @@ Network:
   --companion-port PORT   UDP port for control commands (default: 5555)
 
 Camera backend:
-  --cam-backend {opencv,gstreamer}
+  --cam-backend {opencv,gstreamer,screen}
                           opencv: portable (default)
                           gstreamer: NVIDIA HW-accelerated (Jetson)
+                          screen: screen capture (local mode)
 
 OpenCV options:
   --camera INDEX          Camera device index (default: 0)
@@ -336,6 +397,10 @@ GStreamer options:
   --cam-device PATH       Device path or RTSP URL (default: /dev/video0)
   --cam-width WIDTH       Capture width (default: 1920)
   --cam-height HEIGHT     Capture height (default: 1080)
+
+Screen capture options:
+  --window-title TITLE    Game window title for targeted capture
+  --screen-region x,y,w,h Capture a specific screen region
 
 Common:
   --cam-fps FPS           Target framerate (default: 20)
@@ -398,6 +463,59 @@ v4l2 capture → nvjpegdec (GPU decode) → nvvideoconvert (GPU resize+colorspac
 | `csi` | Jetson CSI camera | `nvarguscamerasrc → nvvideoconvert` |
 | `rtsp` | Network RTSP stream | `rtspsrc → rtph264depay → h264parse → nvv4l2decoder → nvvideoconvert` |
 | `test` | Development test pattern | `videotestsrc → nvvideoconvert` |
+
+### Screen Capture Backend
+
+For single-machine (local) mode. Captures frames directly from the X11 display or a specific window, with no physical camera needed. The backend auto-detects the best available capture method at startup.
+
+**Tier 1: NVIDIA NvFBC (GPU-accelerated)**
+
+Uses NVIDIA's Frame Buffer Capture API via `libnvidia-fbc.so.1`. The GPU handles capture, crop, scale, and RGB conversion entirely — frames arrive in system memory already at the target resolution (1164x874). This is the fastest option with minimal CPU usage.
+
+Requirements:
+- NVIDIA GPU with proprietary drivers (440+)
+- `libnvidia-fbc.so.1` present (included with most NVIDIA driver installations)
+- X11 display server (Wayland is not supported by NvFBC)
+- NvFBC may require a professional-grade GPU (Quadro/Tesla) or [patching](https://github.com/keylase/nvidia-patch) for consumer GPUs
+
+```bash
+# Verify NvFBC is available
+ldconfig -p | grep libnvidia-fbc
+# → libnvidia-fbc.so.1 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libnvidia-fbc.so.1
+```
+
+**Tier 2: GStreamer ximagesrc (GPU resize)**
+
+Falls back to GStreamer's `ximagesrc` for X11 capture, with `nvvideoconvert` for GPU-accelerated resize. Capture is CPU-based but the expensive resize/color-conversion step runs on the GPU.
+
+Requirements:
+- GStreamer 1.0 with `gst-plugins-good` (provides `ximagesrc`)
+- NVIDIA GStreamer plugins (`nvvideoconvert`) for GPU resize
+- X11 display server
+
+```bash
+# Verify GStreamer and ximagesrc are available
+gst-inspect-1.0 ximagesrc
+gst-inspect-1.0 nvvideoconvert
+```
+
+**Tier 3: mss + OpenCV (CPU fallback)**
+
+Pure CPU fallback using the `mss` library for screen capture and OpenCV for resize/color conversion. Works on any system with a display but uses more CPU than the GPU-accelerated options.
+
+Requirements:
+- `mss` Python package (`pip install mss`)
+- Any display server (X11 or Wayland)
+
+**Backend selection** is automatic. The bridge logs which backend was selected at startup:
+
+```
+NvFBC capture initialized (1164x874)           # Tier 1
+# or
+GStreamer ximagesrc capture initialized         # Tier 2
+# or
+mss screen capture initialized (monitor 1)     # Tier 3
+```
 
 ### Testing the Camera
 
@@ -800,6 +918,24 @@ openpilot expects to be running on real comma.ai hardware. The bridge fakes thes
 - Check that calibration was set: look for "liveCalibration" in bridge startup
 - Verify frames are being published: look for increasing frame count in bridge output
 - Try pressing `C` multiple times (each press increases cruise speed)
+
+**Screen capture: "NvFBC not available, trying GStreamer..."**
+- NvFBC requires NVIDIA proprietary drivers with `libnvidia-fbc.so.1`
+- Consumer GPUs (GeForce) may need the [nvidia-patch](https://github.com/keylase/nvidia-patch) to unlock NvFBC
+- Check library presence: `ldconfig -p | grep libnvidia-fbc`
+- NvFBC only works under X11, not Wayland
+
+**Screen capture: black frames or wrong region captured**
+- Use `--window-title "Assetto Corsa"` to target the game window specifically
+- Use `--screen-region x,y,w,h` to manually specify the capture region
+- Verify the game is not minimized (screen capture cannot capture minimized windows)
+- If using NvFBC, ensure the game is visible on the primary display
+
+**Screen capture: low FPS**
+- NvFBC is fastest; if it's not available, check the troubleshooting entry above
+- Reduce `--cam-fps` if the system can't sustain the requested rate
+- Close other GPU-intensive applications competing for resources
+- mss (CPU fallback) is the slowest option; ensure GStreamer or NvFBC is available for better performance
 
 **Low FPS / high latency**
 - On x86: switch to GStreamer backend if possible, or reduce camera resolution
