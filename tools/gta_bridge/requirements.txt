@@ -1,0 +1,9 @@
+# Bridge machine (openpilot + camera)
+opencv-python>=4.5
+numpy
+pynput
+watchdog
+
+# Companion machine (game + virtual Xbox controller)
+# Also needs: evdev (Linux only, for uinput Xbox controller)
+evdev>=1.6
