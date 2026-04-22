@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
 """
-Companion script - runs on the GAME MACHINE (where AC and Fanatec DD+ are).
+Companion script - runs on the GAME MACHINE (where AC is running).
 
 Receives steering/throttle/brake commands from the openpilot bridge over UDP,
-then:
-  1. Sends FFB to the real Fanatec DD+ to physically turn the wheel
-     (AC reads the wheel position as steering input)
-  2. Emits throttle/brake on a virtual pedal device via uinput
+then applies them via one of two controller backends:
+
+  Fanatec mode (default):
+    1. Sends FFB to the real Fanatec DD+ to physically turn the wheel
+       (AC reads the wheel position as steering input)
+    2. Emits throttle/brake on a virtual pedal device via uinput
+
+  Xbox mode (--xbox):
+    1. Emits steering/throttle/brake on a virtual Xbox 360 controller
+       (AC reads it as a standard gamepad)
 
 The bridge machine sends control packets at 100Hz as:
   struct { float steering; float throttle; float brake; uint8_t engaged; }
 
 Usage:
-  On the game machine (with Fanatec DD+ connected):
+  Fanatec DD+ mode:
     python companion.py --listen-port 5555
 
-  Configure AC to use:
-    - Fanatec wheel for steering axis
-    - "AC Bridge Virtual Pedals" for throttle/brake axes
+  Xbox controller mode:
+    python companion.py --listen-port 5555 --xbox
+    python companion.py --listen-port 5555 --xbox --steering-sensitivity 0.7
 """
 import argparse
 import socket
@@ -28,6 +34,7 @@ import sys
 import numpy as np
 
 from fanatec_ffb import FanatecFFBController, VirtualPedals, find_fanatec_wheel
+from xbox_controller import VirtualXboxController
 
 CONTROL_STRUCT = struct.Struct("<fff?")  # steering[-1,1], throttle[0,1], brake[0,1], engaged
 
@@ -38,29 +45,40 @@ def main():
     parser = argparse.ArgumentParser(description='AC Bridge companion (game machine side)')
     parser.add_argument('--listen-port', type=int, default=5555,
                         help='UDP port to receive control commands from bridge')
+    parser.add_argument('--xbox', action='store_true',
+                        help='Use virtual Xbox 360 controller instead of Fanatec wheel')
+    parser.add_argument('--steering-sensitivity', type=float, default=1.0,
+                        help='Steering multiplier [0.0-1.0] (Xbox mode, default: 1.0)')
+    parser.add_argument('--throttle-scale', type=float, default=1.0,
+                        help='Throttle multiplier [0.0-1.0] (Xbox mode, default: 1.0)')
     parser.add_argument('--no-ffb', action='store_true',
-                        help='Disable FFB wheel control (pedals only)')
+                        help='Disable FFB wheel control (pedals only, Fanatec mode)')
     parser.add_argument('--ffb-strength', type=float, default=1.0,
-                        help='FFB strength multiplier [0.0-1.0]')
+                        help='FFB strength multiplier [0.0-1.0] (Fanatec mode)')
     parser.add_argument('--p-gain', type=float, default=5.0,
-                        help='Position tracking P gain')
+                        help='Position tracking P gain (Fanatec mode)')
     parser.add_argument('--d-gain', type=float, default=0.3,
-                        help='Position tracking D gain')
+                        help='Position tracking D gain (Fanatec mode)')
     args = parser.parse_args()
 
+    use_xbox = args.xbox
+    controller = None
     ffb_ctrl = None
     pedals = None
 
-    if not args.no_ffb:
-        wheel = find_fanatec_wheel()
-        if wheel:
-            ffb_ctrl = FanatecFFBController(wheel)
-            ffb_ctrl.start()
-            print("FFB wheel control active")
-        else:
-            print("WARNING: No Fanatec wheel found, running pedals-only mode")
-
-    pedals = VirtualPedals()
+    if use_xbox:
+        controller = VirtualXboxController()
+        print("Xbox 360 controller mode active")
+    else:
+        if not args.no_ffb:
+            wheel = find_fanatec_wheel()
+            if wheel:
+                ffb_ctrl = FanatecFFBController(wheel)
+                ffb_ctrl.start()
+                print("FFB wheel control active")
+            else:
+                print("WARNING: No Fanatec wheel found, running pedals-only mode")
+        pedals = VirtualPedals()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('0.0.0.0', args.listen_port))
@@ -72,6 +90,10 @@ def main():
 
     def cleanup(sig=None, frame=None):
         print("\nShutting down companion...")
+        if controller:
+            controller.reset()
+            time.sleep(0.1)
+            controller.close()
         if ffb_ctrl:
             ffb_ctrl.set_target(0.0)
             time.sleep(0.1)
@@ -100,23 +122,34 @@ def main():
                 engaged = eng
 
                 if engaged:
-                    steer_cmd = np.clip(steering * args.ffb_strength, -1.0, 1.0)
-                    if ffb_ctrl:
-                        ffb_ctrl.set_target(steer_cmd)
-                    pedals.emit(throttle, brake)
+                    if use_xbox:
+                        steer_cmd = np.clip(steering * args.steering_sensitivity, -1.0, 1.0)
+                        throttle_cmd = np.clip(throttle * args.throttle_scale, 0.0, 1.0)
+                        controller.emit(steering=steer_cmd, throttle=throttle_cmd, brake=brake)
+                    else:
+                        steer_cmd = np.clip(steering * args.ffb_strength, -1.0, 1.0)
+                        if ffb_ctrl:
+                            ffb_ctrl.set_target(steer_cmd)
+                        pedals.emit(throttle, brake)
                 else:
-                    if ffb_ctrl:
-                        ffb_ctrl.set_target(0.0)
-                    pedals.emit(0, 0)
+                    if use_xbox:
+                        controller.reset()
+                    else:
+                        if ffb_ctrl:
+                            ffb_ctrl.set_target(0.0)
+                        pedals.emit(0, 0)
 
         except socket.timeout:
             if time.time() - last_recv_time > HEARTBEAT_TIMEOUT:
                 if engaged:
                     print("Bridge connection lost, disengaging")
                     engaged = False
-                    if ffb_ctrl:
-                        ffb_ctrl.set_target(0.0)
-                    pedals.emit(0, 0)
+                    if use_xbox:
+                        controller.reset()
+                    else:
+                        if ffb_ctrl:
+                            ffb_ctrl.set_target(0.0)
+                        pedals.emit(0, 0)
 
 
 if __name__ == "__main__":

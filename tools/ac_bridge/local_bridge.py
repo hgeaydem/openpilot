@@ -38,14 +38,20 @@ def main():
     parser.add_argument('--screen-region', default=None,
                         help='Screen region as x,y,w,h')
     # Companion options
+    parser.add_argument('--xbox', action='store_true',
+                        help='Use virtual Xbox 360 controller instead of Fanatec wheel')
+    parser.add_argument('--steering-sensitivity', type=float, default=1.0,
+                        help='Steering multiplier [0.0-1.0] (Xbox mode)')
+    parser.add_argument('--throttle-scale', type=float, default=1.0,
+                        help='Throttle multiplier [0.0-1.0] (Xbox mode)')
     parser.add_argument('--no-ffb', action='store_true',
-                        help='Disable FFB wheel control (pedals only)')
+                        help='Disable FFB wheel control (pedals only, Fanatec mode)')
     parser.add_argument('--ffb-strength', type=float, default=1.0,
-                        help='FFB strength multiplier [0.0-1.0]')
+                        help='FFB strength multiplier [0.0-1.0] (Fanatec mode)')
     parser.add_argument('--p-gain', type=float, default=5.0,
-                        help='FFB position tracking P gain')
+                        help='FFB position tracking P gain (Fanatec mode)')
     parser.add_argument('--d-gain', type=float, default=0.3,
-                        help='FFB position tracking D gain')
+                        help='FFB position tracking D gain (Fanatec mode)')
     args = parser.parse_args()
 
     companion_proc = None
@@ -65,12 +71,21 @@ def main():
     companion_cmd = [
         sys.executable, os.path.join(SCRIPT_DIR, 'companion.py'),
         '--listen-port', str(args.companion_port),
-        '--ffb-strength', str(args.ffb_strength),
-        '--p-gain', str(args.p_gain),
-        '--d-gain', str(args.d_gain),
     ]
-    if args.no_ffb:
-        companion_cmd.append('--no-ffb')
+    if args.xbox:
+        companion_cmd.extend([
+            '--xbox',
+            '--steering-sensitivity', str(args.steering_sensitivity),
+            '--throttle-scale', str(args.throttle_scale),
+        ])
+    else:
+        companion_cmd.extend([
+            '--ffb-strength', str(args.ffb_strength),
+            '--p-gain', str(args.p_gain),
+            '--d-gain', str(args.d_gain),
+        ])
+        if args.no_ffb:
+            companion_cmd.append('--no-ffb')
 
     print("Starting companion...")
     companion_proc = subprocess.Popen(companion_cmd)

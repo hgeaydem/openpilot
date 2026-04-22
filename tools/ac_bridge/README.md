@@ -106,11 +106,11 @@ Assetto Corsa's built-in UDP telemetry feeds real-time vehicle state (speed, g-f
 - Network connection to the game machine
 
 ### Game Machine
-- Linux (for Fanatec evdev/FFB support; AC runs via Proton/Steam)
-- Fanatec Clubsport DD+ wheelbase (or compatible, see [Supported Wheelbases](#supported-wheelbases))
-- [hid-fanatecff](https://github.com/gotzl/hid-fanatecff) kernel module installed
+- Linux (AC runs via Proton/Steam)
+- **Fanatec mode** (default): Fanatec Clubsport DD+ wheelbase (or compatible, see [Supported Wheelbases](#supported-wheelbases)) + [hid-fanatecff](https://github.com/gotzl/hid-fanatecff) kernel module
+- **Xbox mode** (`--xbox`): No physical wheel needed — uses a virtual Xbox 360 controller via uinput
 - Assetto Corsa with UDP telemetry enabled
-- Network connection to the bridge machine
+- Network connection to the bridge machine (or localhost for local mode)
 
 ---
 
@@ -139,6 +139,7 @@ tools/ac_bridge/
 ├── lib/
 │   ├── __init__.py
 │   └── can.py             # Fake Honda CAN messages for openpilot
+├── xbox_controller.py     # Virtual Xbox 360 controller via uinput
 ├── screen_capture.py      # Screen capture backends (NvFBC/GStreamer/mss)
 ├── local_bridge.py        # Single-machine launcher (screen capture mode)
 ├── tweak.cfg              # Steering ratio tuning (hot-reloadable)
@@ -151,7 +152,8 @@ tools/ac_bridge/
 | File | Machine | Description |
 |---|---|---|
 | `bridge.py` | Bridge | Captures camera frames, publishes to openpilot via cereal, receives AC telemetry, reads openpilot's control output, sends commands to companion. Supports OpenCV and GStreamer camera backends. |
-| `companion.py` | Game | Receives control commands over UDP. Sends FF_CONSTANT to real Fanatec wheel for position tracking. Emits throttle/brake on virtual uinput pedal device. Auto-disengages on connection loss. |
+| `companion.py` | Game | Receives control commands over UDP. Supports two modes: Fanatec (FFB wheel + virtual pedals) and Xbox (virtual Xbox 360 controller). Auto-disengages on connection loss. |
+| `xbox_controller.py` | Game | Creates a virtual Xbox 360 controller using Linux uinput with Microsoft vendor/product IDs. Alternative to Fanatec wheel for steering via gamepad input. |
 | `ac_telemetry.py` | Bridge | Implements the AC UDP telemetry protocol: handshake, subscribe, and continuous RTCarInfo parsing. Thread-safe with async polling mode. |
 | `fanatec_ffb.py` | Game | Finds Fanatec wheel via evdev, implements PD position servo using FF_CONSTANT effects at 200Hz. Creates virtual pedal device via uinput. |
 | `camera_gst.py` | Bridge (Jetson) | GStreamer camera capture with NVIDIA hardware acceleration. Supports v4l2 (MJPEG/raw/H.264), CSI, RTSP, and test sources. All decode, resize, and color conversion on GPU. |
@@ -219,6 +221,8 @@ python fanatec_ffb.py
 
 ### Running the Companion
 
+**Fanatec mode** (default — requires Fanatec wheel):
+
 ```bash
 # Basic usage
 python companion.py --listen-port 5555
@@ -230,9 +234,22 @@ python companion.py --listen-port 5555 --ffb-strength 0.5
 python companion.py --listen-port 5555 --no-ffb
 ```
 
+**Xbox mode** (no wheel required):
+
+```bash
+# Virtual Xbox 360 controller
+python companion.py --listen-port 5555 --xbox
+
+# With reduced steering sensitivity
+python companion.py --listen-port 5555 --xbox --steering-sensitivity 0.7
+
+# With throttle scaling
+python companion.py --listen-port 5555 --xbox --throttle-scale 0.8
+```
+
 ### Assetto Corsa Controller Mapping
 
-Configure AC to use the correct input devices:
+#### Fanatec Mode
 
 1. **Steering**: Assign to the Fanatec wheel (it will be physically moved by FFB)
 2. **Throttle**: Assign to "AC Bridge Virtual Pedals" &rarr; ABS_Z axis
@@ -243,6 +260,15 @@ In AC's controller settings:
 - Select the Fanatec device for the steering axis
 - Select "AC Bridge Virtual Pedals" for gas and brake axes
 - Set steering linearity and deadzone to minimum (the bridge handles all processing)
+
+#### Xbox Mode
+
+1. In AC Settings &rarr; Controls, set input method to **Gamepad**
+2. The virtual Xbox 360 controller will be detected automatically
+3. Default gamepad mapping works out of the box:
+   - Left stick X axis = steering
+   - Right trigger = throttle
+   - Left trigger = brake
 
 ---
 
@@ -299,6 +325,10 @@ python local_bridge.py --ac-host 127.0.0.1 --screen-region 0,0,1920,1080
 
 # Disable FFB for initial testing
 python local_bridge.py --ac-host 127.0.0.1 --no-ffb
+
+# Xbox controller mode (no Fanatec wheel needed)
+python local_bridge.py --ac-host 127.0.0.1 --xbox
+python local_bridge.py --ac-host 127.0.0.1 --xbox --steering-sensitivity 0.7
 ```
 
 The screen capture backend auto-detects the best available method:
@@ -323,7 +353,14 @@ Screen capture:
   --window-title TITLE      Game window title for targeted capture
   --screen-region x,y,w,h   Capture a specific screen region
 
-Companion (FFB):
+Controller mode:
+  --xbox                    Use virtual Xbox 360 controller instead of Fanatec wheel
+
+Xbox options (only with --xbox):
+  --steering-sensitivity F  Steering multiplier 0.0-1.0 (default: 1.0)
+  --throttle-scale F        Throttle multiplier 0.0-1.0 (default: 1.0)
+
+Fanatec options (default, without --xbox):
   --no-ffb                  Disable FFB wheel control (pedals only)
   --ffb-strength FLOAT      FFB strength multiplier 0.0-1.0 (default: 1.0)
   --p-gain FLOAT            FFB position tracking P gain (default: 5.0)
@@ -414,7 +451,14 @@ python companion.py [OPTIONS]
 Network:
   --listen-port PORT      UDP port for receiving commands (default: 5555)
 
-FFB control:
+Controller mode:
+  --xbox                  Use virtual Xbox 360 controller instead of Fanatec wheel
+
+Xbox options (only with --xbox):
+  --steering-sensitivity F  Steering multiplier 0.0-1.0 (default: 1.0)
+  --throttle-scale F        Throttle multiplier 0.0-1.0 (default: 1.0)
+
+Fanatec options (default mode):
   --no-ffb                Disable wheel FFB (pedals only)
   --ffb-strength FLOAT    FFB strength multiplier 0.0-1.0 (default: 1.0)
   --p-gain FLOAT          Position tracking proportional gain (default: 5.0)
@@ -882,11 +926,18 @@ openpilot expects to be running on real comma.ai hardware. The bridge fakes thes
 - Ensure UDP port 9996 is not blocked by a firewall
 - Try testing telemetry independently: `python ac_telemetry.py --host <IP>`
 
-**"No Fanatec wheel found"**
+**"No Fanatec wheel found"** (Fanatec mode)
 - Verify the hid-fanatecff module is loaded: `lsmod | grep fanatec`
 - Check the wheel is in PC mode (red LED)
 - Verify evdev sees it: `evtest` (look for Fanatec in the list)
 - Check USB connection: `lsusb | grep 0eb7`
+- If you don't have a Fanatec wheel, use `--xbox` mode instead
+
+**Virtual Xbox controller not detected by AC** (Xbox mode)
+- Verify uinput is loaded: `ls /dev/uinput`
+- Run companion as root if permission denied: `sudo python companion.py --xbox`
+- Check that AC input method is set to "Gamepad" in settings
+- Verify the device was created: `ls /dev/input/event*` (should show a new device after starting companion)
 
 **Wheel oscillates / vibrates when engaged**
 - Reduce `--ffb-strength` (try 0.3 first)
