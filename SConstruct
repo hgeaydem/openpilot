@@ -60,7 +60,9 @@ lenv = {
   "PATH": os.environ['PATH'],
 }
 
-if arch == "aarch64" or arch == "larch64":
+USE_NVIDIA_GPU = os.environ.get('USE_NVIDIA_GPU', '')
+
+if (arch == "aarch64" or arch == "larch64") and not USE_NVIDIA_GPU:
   lenv["LD_LIBRARY_PATH"] = '/data/data/com.termux/files/usr/lib'
 
   if arch == "aarch64":
@@ -123,6 +125,16 @@ else:
       "/usr/local/opt/openssl/include",
       "/opt/homebrew/opt/openssl/include"
     ]
+  elif USE_NVIDIA_GPU and real_arch == "aarch64":
+    # NVIDIA Jetson (aarch64 with GPU, not Qualcomm)
+    libpath = [
+      "#phonelibs/libyuv/larch64/lib",
+      "#cereal",
+      "#selfdrive/common",
+      "/usr/lib",
+      "/usr/local/lib",
+      "/usr/lib/aarch64-linux-gnu",
+    ]
   else:
     libpath = [
       "#phonelibs/snpe/x86_64-linux-clang",
@@ -135,10 +147,11 @@ else:
     ]
 
   rpath = [
-    "phonelibs/snpe/x86_64-linux-clang",
     "cereal",
     "selfdrive/common"
   ]
+  if not USE_NVIDIA_GPU:
+    rpath.insert(0, "phonelibs/snpe/x86_64-linux-clang")
 
   # allows shared libraries to work globally
   rpath = [os.path.join(os.getcwd(), x) for x in rpath]

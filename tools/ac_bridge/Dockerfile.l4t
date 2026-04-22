@@ -4,6 +4,7 @@
 #   - nvjpegdec / nvv4l2decoder for camera decode
 #   - nvvideoconvert for GPU-accelerated resize and color conversion
 #   - GStreamer pipeline with NVIDIA plugins
+#   - TensorRT for GPU-accelerated neural network inference (modeld)
 #
 # Build:
 #   docker build -f Dockerfile.l4t -t ac-bridge-l4t ../..
@@ -20,7 +21,7 @@ FROM nvcr.io/nvidia/deepstream-l4t:${DEEPSTREAM_TAG}
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# System dependencies for openpilot + GStreamer Python bindings
+# System dependencies for openpilot + GStreamer Python bindings + OpenCL + modeld
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-dev \
@@ -40,11 +41,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     clang \
     cmake \
+    ocl-icd-opencl-dev \
+    libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Python dependencies
 COPY tools/ac_bridge/requirements_jetson.txt /tmp/requirements_jetson.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements_jetson.txt
+
+# Install onnxruntime with TensorRT support for Jetson
+# The NVIDIA Jetson onnxruntime-gpu wheel includes TensorRT EP
+RUN pip3 install --no-cache-dir onnxruntime-gpu || \
+    pip3 install --no-cache-dir onnxruntime
 
 # Copy openpilot source
 COPY . /openpilot
@@ -62,6 +70,17 @@ RUN cd opendbc && \
 # Build boardd API
 RUN cd selfdrive/boardd && \
     scons -j$(nproc) || true
+
+# Build modeld with ONNX + TensorRT (USE_NVIDIA_GPU skips Qualcomm SNPE/Thneed)
+ENV USE_NVIDIA_GPU=1
+RUN scons -j$(nproc) selfdrive/modeld || true
+
+# Fetch model file (git LFS)
+RUN cd models && \
+    git lfs pull --include="supercombo.onnx" || true
+
+# Pre-create TensorRT engine cache directory
+RUN mkdir -p /openpilot/models/trt_cache
 
 ENV PYTHONPATH=/openpilot
 ENV SIMULATION=1

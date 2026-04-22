@@ -38,14 +38,32 @@ def run_loop(m):
 
 
 if __name__ == "__main__":
-  print(ort.get_available_providers(), file=sys.stderr)
-  if 'OpenVINOExecutionProvider' in ort.get_available_providers() and 'ONNXCPU' not in os.environ:
+  available = ort.get_available_providers()
+  print(available, file=sys.stderr)
+
+  provider = None
+  provider_options = None
+
+  if 'TensorrtExecutionProvider' in available and 'ONNXCPU' not in os.environ:
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'models', 'trt_cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    print(f"OnnxJit is using TensorRT (cache: {cache_dir})", file=sys.stderr)
+    options = ort.SessionOptions()
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    provider = 'TensorrtExecutionProvider'
+    provider_options = [{
+      'trt_max_workspace_size': str(1 << 30),
+      'trt_fp16_enable': 'true',
+      'trt_engine_cache_enable': 'true',
+      'trt_engine_cache_path': cache_dir,
+    }]
+  elif 'OpenVINOExecutionProvider' in available and 'ONNXCPU' not in os.environ:
     print("OnnxJit is using openvino", file=sys.stderr)
     options = ort.SessionOptions()
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
     provider = 'OpenVINOExecutionProvider'
-  elif 'CUDAExecutionProvider' in ort.get_available_providers() and 'ONNXCPU' not in os.environ:
-    print("OnnxJit is using CUDA")
+  elif 'CUDAExecutionProvider' in available and 'ONNXCPU' not in os.environ:
+    print("OnnxJit is using CUDA", file=sys.stderr)
     options = ort.SessionOptions()
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
     provider = 'CUDAExecutionProvider'
@@ -56,9 +74,11 @@ if __name__ == "__main__":
     options.inter_op_num_threads = 8
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-
     provider = 'CPUExecutionProvider'
 
   ort_session = ort.InferenceSession(sys.argv[1], options)
-  ort_session.set_providers([provider], None)
+  if provider_options:
+    ort_session.set_providers([provider], provider_options)
+  else:
+    ort_session.set_providers([provider], None)
   run_loop(ort_session)

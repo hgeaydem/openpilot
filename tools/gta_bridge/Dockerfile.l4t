@@ -1,6 +1,7 @@
 # L4T container for running openpilot GTA5 bridge on NVIDIA Jetson.
 #
 # Same base as the AC bridge: DeepStream for HW-accelerated video.
+# TensorRT is used for GPU-accelerated neural network inference (modeld).
 #
 # Build:
 #   docker build -f Dockerfile.l4t -t gta-bridge-l4t ../..
@@ -33,10 +34,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     clang \
     cmake \
+    ocl-icd-opencl-dev \
+    libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY tools/ac_bridge/requirements_jetson.txt /tmp/requirements_jetson.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements_jetson.txt
+
+# Install onnxruntime with TensorRT support for Jetson
+RUN pip3 install --no-cache-dir onnxruntime-gpu || \
+    pip3 install --no-cache-dir onnxruntime
 
 COPY . /openpilot
 WORKDIR /openpilot
@@ -47,6 +54,17 @@ RUN cd cereal && \
 
 RUN cd opendbc && scons -j$(nproc) || true
 RUN cd selfdrive/boardd && scons -j$(nproc) || true
+
+# Build modeld with ONNX + TensorRT (USE_NVIDIA_GPU skips Qualcomm SNPE/Thneed)
+ENV USE_NVIDIA_GPU=1
+RUN scons -j$(nproc) selfdrive/modeld || true
+
+# Fetch model file (git LFS)
+RUN cd models && \
+    git lfs pull --include="supercombo.onnx" || true
+
+# Pre-create TensorRT engine cache directory
+RUN mkdir -p /openpilot/models/trt_cache
 
 ENV PYTHONPATH=/openpilot
 ENV SIMULATION=1

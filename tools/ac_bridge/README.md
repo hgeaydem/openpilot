@@ -44,6 +44,11 @@ Assetto Corsa's built-in UDP telemetry feeds real-time vehicle state (speed, g-f
   - [Container Run](#container-run)
   - [JetPack Version Compatibility](#jetpack-version-compatibility)
   - [RTSP Capture (Alternative to Physical Camera)](#rtsp-capture-alternative-to-physical-camera)
+- [TensorRT Acceleration (modeld)](#tensorrt-acceleration-modeld)
+  - [How It Works](#tensorrt-how-it-works)
+  - [Local Setup (x86 with NVIDIA GPU)](#local-setup-x86-with-nvidia-gpu)
+  - [Jetson Setup (L4T Container)](#jetson-setup-l4t-container)
+  - [Verifying TensorRT Is Active](#verifying-tensorrt-is-active)
 - [Steering Tuning](#steering-tuning)
   - [tweak.cfg Parameters](#tweakcfg-parameters)
   - [Dynamic Steering Ratio](#dynamic-steering-ratio)
@@ -678,6 +683,78 @@ python bridge.py --ac-host 192.168.1.100 \
 
 ---
 
+## TensorRT Acceleration (modeld)
+
+openpilot's neural network (`modeld`) runs the `supercombo.onnx` model for lane detection, path planning, and lead vehicle tracking. By default it uses ONNX Runtime with CUDA. Enabling TensorRT provides significant inference speedup by compiling the model into an optimized TensorRT engine.
+
+### How It Works {#tensorrt-how-it-works}
+
+The ONNX Runtime `TensorrtExecutionProvider` automatically:
+1. Converts supported ONNX subgraphs into TensorRT engines
+2. Enables FP16 precision for faster inference on NVIDIA GPUs
+3. Caches compiled engines in `models/trt_cache/` so subsequent launches are instant
+
+The first run takes several minutes while TensorRT compiles and optimizes the model. Subsequent runs load the cached engine in seconds.
+
+### Local Setup (x86 with NVIDIA GPU)
+
+```bash
+# 1. Install TensorRT (via NVIDIA's apt repository)
+# See: https://docs.nvidia.com/deeplearning/tensorrt/install-guide/
+
+# 2. Install onnxruntime-gpu (includes TensorRT EP)
+pip install onnxruntime-gpu
+
+# 3. Verify TensorRT EP is available
+python3 -c "import onnxruntime; print(onnxruntime.get_available_providers())"
+# Should include 'TensorrtExecutionProvider'
+
+# 4. Fetch the ONNX model (git LFS)
+cd models && git lfs pull --include="supercombo.onnx"
+
+# 5. Build modeld with ONNX support
+USE_NVIDIA_GPU=1 scons -j$(nproc) selfdrive/modeld
+
+# 6. Run the bridge - modeld will automatically use TensorRT
+python bridge.py --ac-host 192.168.1.100 --camera 0
+```
+
+If TensorRT is not available, modeld falls back to CUDA, then to CPU — no configuration needed.
+
+### Jetson Setup (L4T Container)
+
+The L4T Dockerfile builds modeld with TensorRT support automatically. The DeepStream base image includes TensorRT libraries, and the container installs `onnxruntime-gpu` with TensorRT EP.
+
+```bash
+# Build the container (includes modeld + TensorRT)
+docker build -f Dockerfile.l4t -t ac-bridge-l4t ../..
+
+# First run: TensorRT compiles the model (~2-5 min on Orin)
+# Subsequent runs: cached engine loads instantly
+./run_jetson.sh --ac-host 192.168.1.100
+```
+
+The container sets `USE_NVIDIA_GPU=1` to build modeld with ONNX Runtime instead of Qualcomm SNPE.
+
+### Verifying TensorRT Is Active
+
+When modeld starts, the ONNX runner logs which execution provider it selected:
+
+```
+# TensorRT active (best performance):
+OnnxJit is using TensorRT (cache: /openpilot/models/trt_cache)
+
+# CUDA fallback (still GPU-accelerated):
+OnnxJit is using CUDA
+
+# CPU fallback (slowest):
+OnnxJit is using CPU
+```
+
+Check modeld's stderr output. In the container: `docker logs <container_id> 2>&1 | grep OnnxJit`
+
+---
+
 ## Steering Tuning
 
 ### tweak.cfg Parameters
@@ -919,6 +996,23 @@ openpilot expects to be running on real comma.ai hardware. The bridge fakes thes
 ---
 
 ## Troubleshooting
+
+**"OnnxJit is using CPU" (expected TensorRT or CUDA)**
+- Verify `onnxruntime-gpu` is installed (not just `onnxruntime`): `pip install onnxruntime-gpu`
+- Check available providers: `python3 -c "import onnxruntime; print(onnxruntime.get_available_providers())"`
+- For TensorRT: ensure TensorRT is installed and the version matches onnxruntime-gpu's requirements
+- On Jetson: use the NVIDIA-provided onnxruntime-gpu wheel for your JetPack version
+- Set `ONNXCPU=1` to force CPU mode (for debugging)
+
+**TensorRT first run is very slow**
+- This is expected. TensorRT compiles and optimizes the model on first run (~2-5 min on Orin, longer on older hardware)
+- The compiled engine is cached in `models/trt_cache/` — subsequent runs load instantly
+- Do not interrupt the first run or the cache will be incomplete
+
+**modeld build fails with "SNPE not found" on Jetson**
+- Set `USE_NVIDIA_GPU=1` before building: `USE_NVIDIA_GPU=1 scons -j$(nproc) selfdrive/modeld`
+- This skips Qualcomm SNPE/Thneed and uses ONNX Runtime instead
+- The L4T Dockerfile sets this automatically
 
 **"AC telemetry handshake timeout"**
 - Verify AC is running and a session is loaded (not in menus)

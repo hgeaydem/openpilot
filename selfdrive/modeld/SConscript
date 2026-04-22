@@ -1,3 +1,5 @@
+import os
+
 Import('env', 'arch', 'cereal', 'messaging', 'common', 'gpucommon', 'visionipc')
 lenv = env.Clone()
 
@@ -26,7 +28,10 @@ thneed_src = [
   "runners/thneedmodel.cc",
 ]
 
-if arch == "aarch64" or arch == "larch64":
+# USE_NVIDIA_GPU=1 forces ONNX mode on aarch64 (for NVIDIA Jetson instead of Qualcomm)
+use_nvidia_gpu = os.environ.get('USE_NVIDIA_GPU', '')
+
+if (arch == "aarch64" or arch == "larch64") and not use_nvidia_gpu:
   libs += ['gsl', 'CB']
   libs += ['gnustl_shared'] if arch == "aarch64" else ['pthread', 'dl']
 
@@ -55,10 +60,19 @@ else:
     del libs[libs.index('symphony-cpu')]
     del common_src[common_src.index('runners/snpemodel.cc')]
 
+  if use_nvidia_gpu:
+    # NVIDIA Jetson: remove Qualcomm-specific SNPE libs that won't exist
+    if 'SNPE' in libs:
+      del libs[libs.index('SNPE')]
+    if 'symphony-cpu' in libs:
+      del libs[libs.index('symphony-cpu')]
+    if 'runners/snpemodel.cc' in common_src:
+      del common_src[common_src.index('runners/snpemodel.cc')]
+
 common_model = lenv.Object(common_src)
 
 # build thneed model
-if arch == "aarch64" or arch == "larch64":
+if (arch == "aarch64" or arch == "larch64") and not use_nvidia_gpu:
   compiler = lenv.Program('thneed/compile', ["thneed/compile.cc"]+common_model, LIBS=libs)
   cmd = f"cd {Dir('.').abspath} && {compiler[0].abspath} ../../models/supercombo.dlc ../../models/supercombo.thneed --binary"
 
